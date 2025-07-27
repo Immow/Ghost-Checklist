@@ -1,29 +1,18 @@
 local mod_gui = require("mod-gui")
 
--- Initialize persistent storage and create buttons for all players
-local function create_buttons_for_all_players()
-	for _, player in pairs(game.connected_players) do
-		create_mod_button(player)
-	end
-end
-
+-- Initialize persistent storage
 script.on_init(function()
 	storage.checklists = {}
 	storage.cached_inventories = {}
-	create_buttons_for_all_players()
 end)
 
 script.on_configuration_changed(function()
 	storage.checklists = storage.checklists or {}
 	storage.cached_inventories = storage.cached_inventories or {}
-	-- Add mod buttons for all existing players after update
-	for _, player in pairs(game.players) do
-		create_mod_button(player)
-	end
 end)
 
--- Create mod button
-function create_mod_button(player)
+-- Create mod button for all players
+local function create_mod_button(player)
 	local flow = mod_gui.get_button_flow(player)
 	if not flow.ghost_toggle_button then
 		flow.add {
@@ -35,23 +24,25 @@ function create_mod_button(player)
 	end
 end
 
--- Create button for newly created player
+-- When a new player is created
 script.on_event(defines.events.on_player_created, function(event)
 	local player = game.get_player(event.player_index)
-	create_mod_button(player)
+	if player then
+		create_mod_button(player)
+	end
 end)
 
--- Toggle selection mode or clear checklist
-script.on_event(defines.events.on_gui_click, function(event)
-	if event.element.name == "ghost_toggle_button" then
-		local player = game.get_player(event.player_index)
-		player.cursor_stack.set_stack { name = "ghost-checker", count = 1 }
-		player.print("Ghost Checklist: Select an area with ghosts.")
-	elseif event.element.name == "ghost_clear" then
-		local player = game.get_player(event.player_index)
-		storage.checklists[player.index] = nil
-		if player.gui.left.ghost_checklist then
-			player.gui.left.ghost_checklist.destroy()
+-- When mod is added/updated in an existing save
+script.on_configuration_changed(function(cfg)
+	for _, player in pairs(game.players) do
+		create_mod_button(player)
+	end
+end)
+
+script.on_event(defines.events.on_tick, function(event)
+	if event.tick == 1 then
+		for _, player in pairs(game.players) do
+			create_mod_button(player)
 		end
 	end
 end)
@@ -92,40 +83,53 @@ local function update_gui(player)
 	end
 end
 
--- Recalculate how many items player has
+-- Calculate how many items player has (normal view or cached)
 local function recalc_checklist(player)
 	local checklist = storage.checklists[player.index]
 	if not checklist then return end
 
-	local inv = player.get_main_inventory()
+	local inv_contents
+	if player.controller_type == defines.controllers.remote then
+		-- Use cached inventory if in remote view
+		inv_contents = storage.cached_inventories[player.index] or {}
+	else
+		-- Normal view: get actual inventory
+		local inv = player.get_main_inventory()
+		inv_contents = inv and inv.get_contents() or {}
+	end
+
 	for name, data in pairs(checklist) do
-		if inv then
-			data.have = inv.get_item_count(name)
-			if data.have >= data.need then
-				checklist[name] = nil
-			end
-		else
-			-- no inventory, set have to 0 so it still shows up
-			data.have = 0
+		data.have = inv_contents[name] or 0
+		if data.have >= data.need then
+			checklist[name] = nil
 		end
 	end
 
 	update_gui(player)
 end
 
--- When player switches to map mode
--- script.on_event(defines.events.on_player_controller_changed, function(event)
--- 	if event.item ~= "ghost-checker" then return end
--- 	storage.cached_inventories = storage.checklists
--- end)
+-- GUI button clicks
+script.on_event(defines.events.on_gui_click, function(event)
+	local player = game.get_player(event.player_index)
+	if event.element.name == "ghost_toggle_button" then
+		player.cursor_stack.set_stack { name = "ghost-checker", count = 1 }
+		player.print("Ghost Checklist: Select an area with ghosts.")
+	elseif event.element.name == "ghost_clear" then
+		storage.checklists[player.index] = nil
+		if player.gui.left.ghost_checklist then
+			player.gui.left.ghost_checklist.destroy()
+		end
+	end
+end)
 
--- Handle selection of ghosts (add to list)
+-- Handle ghost selection
 script.on_event(defines.events.on_player_selected_area, function(event)
 	if event.item ~= "ghost-checker" then return end
-
 	local player = game.get_player(event.player_index)
-	storage.checklists[player.index] = storage.checklists[player.index] or {}
-	local checklist = storage.checklists[player.index]
+
+	-- If existing checklist exists, merge instead of clearing
+	local checklist = storage.checklists[player.index] or {}
+	storage.checklists[player.index] = checklist
 
 	for _, entity in pairs(event.entities) do
 		if entity.ghost_name then
@@ -139,10 +143,33 @@ script.on_event(defines.events.on_player_selected_area, function(event)
 	recalc_checklist(player)
 end)
 
--- Update when inventory changes
+-- Inventory change updates
 script.on_event(defines.events.on_player_main_inventory_changed, function(event)
 	local player = game.get_player(event.player_index)
 	if storage.checklists[player.index] then
 		recalc_checklist(player)
 	end
 end)
+
+-- Cache inventory when entering remote view and refresh when leaving
+if defines.events.on_player_changed_controller then
+	script.on_event(defines.events.on_player_changed_controller, function(event)
+		local player = game.get_player(event.player_index)
+		if not player or not player.valid then return end
+
+		if player.controller_type == defines.controllers.remote then
+			-- Cache current inventory before entering map view
+			local inv = player.get_main_inventory()
+			if inv then
+				storage.cached_inventories[player.index] = inv.get_contents()
+			else
+				storage.cached_inventories[player.index] = {}
+			end
+		else
+			-- Back to normal, refresh checklist
+			if storage.checklists[player.index] then
+				recalc_checklist(player)
+			end
+		end
+	end)
+end
