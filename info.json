@@ -1,0 +1,11 @@
+{
+	"name": "build-planner",
+	"version": "0.0.1",
+	"title": "Ghost Checklist",
+	"author": "Koen Schippers aka Immow",
+	"factorio_version": "2.0",
+	"description": "Select ghosts to see which items you need compared to your inventory.",
+	"dependencies": [
+		"base >= 2.0"
+	]
+}
